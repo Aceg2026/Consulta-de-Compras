@@ -690,16 +690,17 @@ function formatPrice(val) {
   return n.toLocaleString('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 2 });
 }
 
-function similarity(a, b) {
-  a = a.toLowerCase(); b = b.toLowerCase();
-  if (b.includes(a) || a.includes(b)) return 1;
-  const wa = a.split(/\s+/);
-  const wb = b.split(/\s+/);
-  let hits = 0;
-  for (const w of wa) {
-    if (w.length > 2 && wb.some(x => x.includes(w) || w.includes(x))) hits++;
-  }
-  return hits / Math.max(wa.length, 1);
+function similarity(query, productName) {
+  const q = query.toLowerCase().trim();
+  const p = productName.toLowerCase().trim();
+  // Exact substring match anywhere in product name = perfect score
+  if (p.includes(q)) return 1;
+  // All words of query must appear somewhere in product name
+  const words = q.split(/\s+/).filter(w => w.length > 1);
+  if (words.length === 0) return 0;
+  const allMatch = words.every(w => p.includes(w));
+  if (allMatch) return 0.9;
+  return 0;
 }
 
 async function fetchSheetData() {
@@ -748,6 +749,7 @@ async function sendQuery() {
     const iProd = findColIndex(cols, ['producto','descripcion','descripción','item','nombre']);
     const iQty  = findColIndex(cols, ['cantidad','qty','quantity','cant']);
     const iPrice= findColIndex(cols, ['precio','price','costo','valor','unit']);
+    const iProv = findColIndex(cols, ['proveedor','provider','supplier','prov']);
 
     const [header, ...dataRows] = rows;
 
@@ -773,7 +775,7 @@ async function sendQuery() {
         document.getElementById('sendBtn').disabled = false;
         return;
       }
-      renderResults('Compras recientes', results, iDate, iProd, iQty, iPrice, false);
+      renderResults('Compras recientes', results, iDate, iProd, iQty, iPrice, iProv, false);
     } else if (ql.includes('más comprado') || ql.includes('mas comprado') || ql.includes('más frecuente')) {
       const freq = {};
       prodRows.forEach(r => {
@@ -788,12 +790,12 @@ async function sendQuery() {
       }
       results = prodRows.filter(r => (r[iProd]||'').trim() === top[0])
         .sort((a,b) => new Date(b[iDate]) - new Date(a[iDate]));
-      renderResults(top[0], results, iDate, iProd, iQty, iPrice, true);
+      renderResults(top[0], results, iDate, iProd, iQty, iPrice, iProv, true);
     } else {
       // Fuzzy search by product name
       const scored = prodRows
         .map(row => ({ row, score: similarity(query, row[iProd] || '') }))
-        .filter(x => x.score > 0.15)
+        .filter(x => x.score > 0)
         .sort((a,b) => b.score - a.score);
 
       if (!scored.length) {
@@ -808,11 +810,12 @@ async function sendQuery() {
       results = scored
         .filter(x => x.score >= threshold)
         .map(x => x.row)
-        .sort((a,b) => new Date(b[iDate]) - new Date(a[iDate]));
+        .sort((a,b) => new Date(b[iDate]) - new Date(a[iDate]))
+        .slice(0, 5);
 
       const uniqueProducts = [...new Set(results.map(r => r[iProd]))];
       const productLabel = uniqueProducts.length === 1 ? uniqueProducts[0] : `"${query}" (${uniqueProducts.length} variantes)`;
-      renderResults(productLabel, results, iDate, iProd, iQty, iPrice, true);
+      renderResults(productLabel, results, iDate, iProd, iQty, iPrice, iProv, true);
     }
 
   } catch (err) {
@@ -823,7 +826,7 @@ async function sendQuery() {
   document.getElementById('sendBtn').disabled = false;
 }
 
-function renderResults(productName, rows, iDate, iProd, iQty, iPrice, showSummary) {
+function renderResults(productName, rows, iDate, iProd, iQty, iPrice, iProv, showSummary) {
   const total = rows.length;
   if (!total) {
     appendBotMessage(`No se encontraron compras para <strong>${productName}</strong>.`);
@@ -838,16 +841,20 @@ function renderResults(productName, rows, iDate, iProd, iQty, iPrice, showSummar
   let itemsHtml = '';
   rows.forEach((row, i) => {
     const isLatest = i === 0;
+    const proveedor = iProv >= 0 ? (row[iProv] || '—') : '';
+    const precioUnitario = iPrice >= 0 ? formatPrice(row[iPrice]) : '—';
+    const cantidad = iQty >= 0 ? (row[iQty] || '—') : '';
     itemsHtml += `
       <li class="purchase-item ${isLatest ? 'latest' : ''}">
         <div class="purchase-rank ${isLatest ? 'latest-badge' : ''}">${isLatest ? 'Últ.' : '#'+(i+1)}</div>
         <div class="purchase-info">
           <div class="purchase-date">${formatDate(row[iDate])}</div>
-          ${iProd >= 0 && rows.some(r => r[iProd] !== rows[0][iProd]) ? `<div class="purchase-desc">${row[iProd]||''}</div>` : ''}
+          <div class="purchase-desc">${row[iProd]||''}</div>
+          ${proveedor ? `<div class="purchase-desc" style="color:var(--muted2);font-size:11px">🏭 ${proveedor}</div>` : ''}
         </div>
         <div class="purchase-nums">
-          <div class="purchase-price">${formatPrice(row[iPrice])}</div>
-          ${iQty>=0 ? `<div class="purchase-qty">Cant: ${row[iQty]||'—'}</div>` : ''}
+          <div class="purchase-price">${precioUnitario}</div>
+          ${cantidad ? `<div class="purchase-qty">Cant: ${cantidad}</div>` : ''}
         </div>
       </li>`;
   });
@@ -873,7 +880,7 @@ function renderResults(productName, rows, iDate, iProd, iQty, iPrice, showSummar
       <div class="results-header">
         <div class="results-product">${productName}</div>
         <div class="results-meta">
-          <span class="chip">${total} registro${total !== 1 ? 's' : ''}</span>
+          <span class="chip">${total} resultado${total !== 1 ? 's' : ''}</span>
           ${lastPrice ? `<span class="chip green">Último: ${formatPrice(lastPrice)}</span>` : ''}
         </div>
       </div>
